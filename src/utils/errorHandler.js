@@ -1,15 +1,15 @@
 export class ApiError extends Error {
     constructor(
         statusCode,
-        massage = "Something Is Wrong",//default parameter
+        message = "Something Is Wrong",//default parameter
         errors = [],
         stack = "",
 
     ) {
-        super(massage);
+        super(message);
         this.statusCode = statusCode;
         this.data = null;
-        this.message = massage;
+        this.message = message;
         this.errors = errors;
         this.success = false;
         stack ? this.stack = stack : Error.captureStackTrace(this, this.constructor);

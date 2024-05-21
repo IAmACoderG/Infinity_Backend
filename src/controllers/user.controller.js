@@ -4,6 +4,7 @@ import { User } from "../models/user.model.js";
 import { uploadOnCloudinary } from "../utils/cloudinary.js";
 import { ApiResponse } from "../utils/responseHandler.js";
 import jwt from "jsonwebtoken";
+import Post from "../models/post.model.js";
 
 const getAccessTokenAndRefreshToken = async (userId) => {
     try {
@@ -65,17 +66,20 @@ export const registerUser = asyncHandler(async (req, res) => {
     const avatarUploded = await uploadOnCloudinary(avatarLocalPath);
     const coverImageUploded = await uploadOnCloudinary(coverImageLocalPath);
 
-    console.log(avatarUploded);
-    console.log(coverImageUploded);
     //Check Because avatar field Required in user Model
-    if (!avatarUploded) { throw new ApiError(400, "Avatar is not uploaded in Cloud! Some Error Occur") }
+    if (!avatarUploded) { return new ApiResponse(400, {}, "Avatar is not uploaded in Cloud! Some Error Occur") }
 
-    const user = await User.create({ username, fullName, email, password, avatar: avatarUploded.url, coverImage: coverImageUploded?.url || "", })
+    const user = await User.create({ username, fullName, email, password, avatar: avatarUploded.url || "", coverImage: coverImageUploded?.url || "", })
 
     const userCreated = await User.findById(user._id).select("-password -refreshToken");
+
+    const { accessToken, refreshToken } = await getAccessTokenAndRefreshToken(userCreated._id);
+
     if (!userCreated) { throw new ApiError(500, "Something Went Wrong While Registering the User") }
 
-    return res.status(201).json(new ApiResponse(200, userCreated, "User Created Successfully"))
+    const optionForSequreCookies = { httpOnly: true, secure: false };
+
+    return res.status(201).cookie("refreshToken", refreshToken, optionForSequreCookies).cookie("accessToken", accessToken, optionForSequreCookies).json(new ApiResponse(200, { userCreated, accessToken, refreshToken }, "User Created Successfully"))
 })
 
 export const logInUser = asyncHandler(async (req, res) => {
@@ -107,14 +111,14 @@ export const logInUser = asyncHandler(async (req, res) => {
     //new access of User after Saving the refresh Token in User
     const loggedInUser = await User.findById(user._id).select("-password -refreshToken");
 
-    const optionForSequreCookies = { httpOnly: true, secure: true };
+    const optionForSequreCookies = { httpOnly: true, secure: false };
 
     return res.status(200).cookie("refreshToken", refreshToken, optionForSequreCookies).cookie("accessToken", accessToken, optionForSequreCookies).json(new ApiResponse(200, { loggedInUser, accessToken, refreshToken }, "Log In Successfully"))
 })
 
 export const logOutUser = asyncHandler(async (req, res) => {
     await User.findByIdAndUpdate(req.user._id, { $set: { refreshToken: undefined } }, { new: true });
-    const optionForSequreCookies = { httpOnly: true, secure: true };
+    const optionForSequreCookies = { httpOnly: true, secure: false };
     return res.status(200).clearCookie("refreshToken", optionForSequreCookies).clearCookie("accessToken", optionForSequreCookies).json(new ApiResponse(200, {}, "User Logged Out"))
 })
 
@@ -129,7 +133,7 @@ export const refreshTokenAgainGeneratedAccess = asyncHandler(async (req, res) =>
         if (user?.refreshToken !== comingFromUserSideRefreshToken) { throw new ApiError(403, "Your RefreshToken is Expired or Invalid") };
         const { accessToken, newRefreshToken } = await getAccessTokenAndRefreshToken(user?._id);
 
-        const optionForSequreCookies = { httpOnly: true, secure: true };
+        const optionForSequreCookies = { httpOnly: true, secure: false };
         return res.status(200).cookie("refreshToken", newRefreshToken, optionForSequreCookies).cookie("accessToken", accessToken, optionForSequreCookies).json(new ApiResponse(200, { user, accessToken, newRefreshToken }, "New Session start again"))
 
     } catch (error) {
@@ -194,33 +198,34 @@ export const currentUser = asyncHandler(async (req, res) => {
     try {
         return res.status(200).json(new ApiResponse(200, { user: req.user }, "Current User"));
     } catch (error) {
-        throw new ApiError(405, "Logged Out User");
+        throw new ApiError(500, "Internal Server Error Occurs While Access Current User");
     }
 })
 
-export const userprofile = asyncHandler(async (req, res) => {
+export const myProfile = asyncHandler(async (req, res) => {
     try {
-        const myProfile = await User.findById(req.user._id).populate("posts");
+        const myProfile = await User.findById(req.user._id).populate("posts follower following");
         return res.status(200).json(new ApiResponse(200, myProfile, "Here Is my Profile"));
     } catch (error) {
-        throw new ApiError(405, "Logged Out User");
+        throw new ApiError(500, "Internal Server Error Occurs While Access My Profile");
     }
 });
 
 export const getUserProfile = asyncHandler(async (req, res) => {
     try {
-        const myProfile = await User.findById(req.params.id).populate("posts");
-        return res.status(200).json(new ApiResponse(200, myProfile, "Here Is Get my Profile"));
+        const userProfile = await User.findById(req.params.id).populate("posts");
+        return res.status(200).json(new ApiResponse(200, userProfile, "Here Is Get User Profile"));
     } catch (error) {
-        throw new ApiError(405, "Logged Out User");
+        throw new ApiError(500, "Internal Server Error Occurs While Access Get User Profile");
     }
 });
+
 export const getAllUsers = asyncHandler(async (req, res) => {
     try {
-        const allUsers = await User.find({});
+        const allUsers = await User.find();
         return res.status(200).json(new ApiResponse(200, allUsers, "All Users fetched"));
     } catch (error) {
-        throw new ApiError(405, "Logged Out User");
+        throw new ApiError(500, "Internal Server Error Occurs While All Users Accessed");
     }
 });
 
@@ -228,24 +233,62 @@ export const followOrUnfollow = asyncHandler(async (req, res) => {
     try {
         const followedByUser = await User.findById(req.params.id);
         const user = await User.findById(req.user._id);
-        if (!followedByUser) throw new ApiError(404, "User Not found");
+        if (!followedByUser) return res.status(404).json(new ApiResponse(404, "User Not found"));
+
+        //if user And followedByUser Both are the Same ...>>>
+        if (user._id.toString() === followedByUser._id.toString()) return res.status(400).json(new ApiResponse(400, {}, "You Can't follow YourSelf"))
+
+        //if following or followes Already Exist then remove._id And Unfollow..>>>
         if (user.following.includes(followedByUser._id)) {
             const userIndex = user.following.indexOf(followedByUser._id);
             const followedByUserIndex = followedByUser.follower.indexOf(user._id);
 
             user.following.splice(userIndex, 1);
-            followedByUser.following.splice(followedByUserIndex, 1);
+            followedByUser.follower.splice(followedByUserIndex, 1);
 
             await user.save();
             await followedByUser.save();
-            return res.status(200).json(ApiResponse(200, "User Unfollow Successfully"))
+            return res.status(200).json(new ApiResponse(200, {}, "User Unfollow Successfully"))
         }
+
+        //if following or followes Not Exist then Add._id And follow..>>>
         user.following.push(followedByUser._id);
         followedByUser.follower.push(user._id);
+
         await user.save();
         await followedByUser.save();
-        return res.status(200).json(ApiResponse(200, "User followed Successfully"))
+        return res.status(200).json(new ApiResponse(200, {}, "User followed Successfully"));
     } catch (error) {
         throw new ApiError(500, "Internal Server Error In Following")
+    }
+});
+
+export const getMyPosts = asyncHandler(async (req, res) => {
+    try {
+        const user = await User.findById(req.user._id);
+        const posts = [];
+        for (let i = 0; i < user.posts.length; i++) {
+            const post = await Post.findById(user.posts[i]).populate("owner likes comments.user");
+            posts.push(post);
+        }
+        return res.status(200).json(new ApiResponse(200, posts.reverse(), "Accessed All My Posts"));
+
+    } catch (error) {
+        throw new ApiError(500, "Internal Server Error While GetMyPosts");
+    }
+});
+
+export const getUserPosts = asyncHandler(async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id);
+        const posts = [];
+        for (let i = 0; i < user.posts.length; i++) {
+            const post = await Post.findById(user.posts[i]).populate("owner likes comments.user");
+            posts.push(post);
+        }
+        return res.status(200).json(new ApiResponse(200, posts, "Accessed All User Posts"));
+
+    } catch (error) {
+        throw new ApiError(500, "Internal Server Error While GetUserPosts");
     }
 });
