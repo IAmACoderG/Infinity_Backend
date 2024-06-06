@@ -213,7 +213,7 @@ export const myProfile = asyncHandler(async (req, res) => {
 
 export const getUserProfile = asyncHandler(async (req, res) => {
     try {
-        const userProfile = await User.findById(req.params.id).populate("posts");
+        const userProfile = await User.findById(req.params.id).populate("posts follower following");
         return res.status(200).json(new ApiResponse(200, userProfile, "Here Is Get User Profile"));
     } catch (error) {
         throw new ApiError(500, "Internal Server Error Occurs While Access Get User Profile");
